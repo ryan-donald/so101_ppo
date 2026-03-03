@@ -20,12 +20,11 @@ class deploy_reach:
 
     def __init__(
         self,
-        agent_path,
         urdf_path,
         port,
         action_scale,
-        checkpoint_path = "so101_ppo/reach_agent.pth",
-        target_pose = np.array([0.25, 0.1, 0.25, 0.0, 0.0, 1.0, 0.0]),
+        agent_path = "so101_ppo/reach_agent.pth",
+        # target_pose = np.array([0.25, 0.1, 0.25, 0.0, 0.0, 1.0, 0.0]),
         device = "cpu",
         robot_id = "ryan_robot",
         use_normalization = True,
@@ -35,7 +34,7 @@ class deploy_reach:
 
         self.urdf_path = urdf_path
         self.port = port
-        self.target_pose = target_pose
+        # self.target_pose = target_pose
         self.action_scale = action_scale
         self.device = torch.device(device)
         self.control_dt = 1.0/control_hz
@@ -53,7 +52,8 @@ class deploy_reach:
             0.0,
             0.0,
             0.0,
-            94.69,
+            # 94.69,
+            44.0,
             -1.75,
         ], dtype=np.float32)
 
@@ -68,7 +68,7 @@ class deploy_reach:
             use_normalization=use_normalization,
         ).to(self.device)
 
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(agent_path, map_location=self.device)
         self.actor.load_state_dict(checkpoint)
         self.actor.eval()
 
@@ -76,14 +76,37 @@ class deploy_reach:
         self.num_joints = 6
         self.action_dim = 5
 
-    def move_to_start(self, duration = 3.0):
+        kinematics = RobotKinematics(
+            urdf_path=str(urdf_path),
+            target_frame_name="gripper_frame_link",
+            joint_names=self.motor_names,
+        )
+        self.joints_to_ee = RobotProcessorPipeline(
+            steps=[
+                ForwardKinematicsJointsToEE(
+                    kinematics=kinematics,
+                    motor_names=self.motor_names,
+                )
+            ],
+            to_transition=observation_to_transition,
+            to_output=transition_to_observation,
+        )
+
+        self.workspace_bounds = {
+            "x": (0.12, 0.29),
+            "y": (-0.24, 0.24),
+            "z": (0.15, 0.30),
+        }
+        self.success_threshold = 0.04
+
+    def move_to_start(self, duration = 1.0):
         """Moves the robot arm into the start position."""
         current_obs = self.follower.get_observation()
         gripper_name = self.motor_names[self.action_dim]
         current_arm = np.array([current_obs[f"{m}.pos"] for m in self.motor_names[:self.action_dim]])
         current_gripper = float(current_obs[f"{gripper_name}.pos"])
 
-        steps = 3 * 15
+        steps = 2 * 15
         step_size = 1.0/15.0
         for step in range(steps):
             alpha = (step + 1) / steps
@@ -142,6 +165,21 @@ class deploy_reach:
 
         return observation
     
+    def compute_ee_position(self) -> np.ndarray:
+        """Return current EE XYZ (metres) using LeRobot forward kinematics."""
+        obs_dict = self.follower.get_observation()
+        ee_obs = self.joints_to_ee(obs_dict)
+        return np.array([ee_obs["ee.x"], ee_obs["ee.y"], ee_obs["ee.z"]], dtype=np.float32)
+
+    def sample_workspace_target(self) -> np.ndarray:
+        """Sample a random target pose within the Isaac task workspace bounds."""
+        x = np.random.uniform(*self.workspace_bounds["x"])
+        y = np.random.uniform(*self.workspace_bounds["y"])
+        z = np.random.uniform(*self.workspace_bounds["z"])
+
+        quat = np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+        return np.array([x, y, z, *quat], dtype=np.float32)
+
     def parse_joint_limits_from_urdf(self, urdf_path):
         """Finds joint limits for robot from URDF file.
            Necessary for converting the normalized state output by LeRobot to radians for joint velocities."""
@@ -203,8 +241,9 @@ class deploy_reach:
         return action
     
     def run_episode(self, max_steps=100, reset_to_home=True):
-        """Handles the episode logic, retrieving observation, performing the action on the real-robot, and waiting until the next time to perform the loop."""
-        
+        """Handles the episode logic with dynamic target resampling on success,
+        matching Isaac-Reach-SO-ARM101-Normalized-v0 behaviour."""
+
         if reset_to_home:
             self.move_to_start(3.0)
 
@@ -212,19 +251,65 @@ class deploy_reach:
         self.prev_joint_state_rad = None
         self.prev_time = None
 
+        self.target_pose = self.sample_workspace_target()
+
+        targets_reached = 0
+
         for step in range(max_steps):
             step_start = time.time()
 
             obs = self.get_observation()
             action = self.step(obs)
 
-            sleep_time = max(0, self.control_dt)
+            # Check success via LeRobot FK
+            ee_pos = self.compute_ee_position()
+            dist = float(np.linalg.norm(ee_pos - self.target_pose[:3]))
 
+            if dist < self.success_threshold:
+                targets_reached += 1
+                time.sleep(1)
+                self.target_pose = self.sample_workspace_target()
+
+            elapsed = time.time() - step_start
+            sleep_time = max(0.0, self.control_dt - elapsed)
             if sleep_time:
                 time.sleep(sleep_time)
+
+        print(f"Episode done. Targets reached: {targets_reached}")
     
+    def move_to_end(self):
+        """Moves the robot arm into the start position."""
+        current_obs = self.follower.get_observation()
+        gripper_name = self.motor_names[self.action_dim]
+        current_arm = np.array([current_obs[f"{m}.pos"] for m in self.motor_names[:self.action_dim]])
+        current_gripper = float(current_obs[f"{gripper_name}.pos"])
+
+        self.end_joint_state = np.array([
+            0.0,
+            -85.0,
+            80,
+            60,
+            -1.75,
+        ], dtype=np.float32)
+
+        self.end_gripper_state = 9.09
+
+        steps = 2 * 15
+        step_size = 1.0/15.0
+        for step in range(steps):
+            alpha = (step + 1) / steps
+            target_arm = current_arm * (1 - alpha) + self.end_joint_state * alpha
+            target_gripper = current_gripper * (1 - alpha) + self.end_gripper_state * alpha
+            action_dict = {f"{m}.pos": float(target_arm[i]) for i, m in enumerate(self.motor_names[:self.action_dim])}
+            action_dict[f"{gripper_name}.pos"] = float(target_gripper)
+            robot_action = RobotAction(action_dict)
+            self.follower.send_action(robot_action)
+            time.sleep(step_size)
+
+
     def disconnect(self):
         """Handles"""
+        self.move_to_end()
         self.follower.disconnect()
 
 def main():
@@ -237,22 +322,22 @@ def main():
                         help="Use observation normalization (default: True)")
 
     # Target pose
-    parser.add_argument("--target-x", type=float, default=0.25)
-    parser.add_argument("--target-y", type=float, default=0.0)
-    parser.add_argument("--target-z", type=float, default=0.15)
-    parser.add_argument("--target-quat", type=float, nargs=4, 
-                        default=[0.0, 0.0, 1.0, 0.0],
-                        help="Target quaternion [qw, qx, qy, qz]")
+    # parser.add_argument("--target-x", type=float, default=0.25)
+    # parser.add_argument("--target-y", type=float, default=0.0)
+    # parser.add_argument("--target-z", type=float, default=0.15)
+    # parser.add_argument("--target-quat", type=float, nargs=4, 
+    #                     default=[0.0, 0.0, 1.0, 0.0],
+    #                     help="Target quaternion [qw, qx, qy, qz]")
     
     # Control
-    parser.add_argument("--hz", type=float, default=2.0,
+    parser.add_argument("--hz", type=float, default=15.0,
                         help="Control frequency (Hz)")
     parser.add_argument("--max-steps", type=int, default=100,
                         help="Maximum steps per episode")
     parser.add_argument("--reset-to-home", action="store_true",
                         help="Reset to home position before episode")
-    parser.add_argument("--action-scale", type=float, default=10.0,
-                        help="Action scale in normalized space (default: 10.0, training used 30.0)")
+    parser.add_argument("--action-scale", type=float, default=30.0,
+                        help="Action scale in normalized space")
 
     # Robot
     parser.add_argument("--port", type=str, default="/dev/ttyACM0",
@@ -263,10 +348,10 @@ def main():
     args = parser.parse_args()
     
     # Create target pose
-    target_pose = np.array([
-        args.target_x, args.target_y, args.target_z,
-        *args.target_quat
-    ], dtype=np.float32)
+    # target_pose = np.array([
+    #     args.target_x, args.target_y, args.target_z,
+    #     *args.target_quat
+    # ], dtype=np.float32)
     
     # Create deployment
     deployment = deploy_reach(
@@ -274,7 +359,7 @@ def main():
         urdf_path="/home/ryan/Documents/so101_ppo/so101_new_calib.urdf",
         port=args.port,
         robot_id=args.robot_id,
-        target_pose=target_pose,
+        # target_pose=target_pose,
         action_scale=args.action_scale,
         control_hz=args.hz,
         use_normalization=args.use_normalization

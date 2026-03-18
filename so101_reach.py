@@ -1,3 +1,4 @@
+from network import Actor
 import argparse
 import sys
 import time
@@ -14,7 +15,7 @@ from lerobot.processor.converters import observation_to_transition, transition_t
 from lerobot.robots.so_follower.robot_kinematic_processor import ForwardKinematicsJointsToEE
 
 sys.path.insert(0, "/home/ryan/Documents/IsaacLab/scripts/ryan_ppo")
-from network import Actor
+
 
 class deploy_reach:
 
@@ -23,12 +24,12 @@ class deploy_reach:
         urdf_path,
         port,
         action_scale,
-        agent_path = "so101_ppo/reach_agent.pth",
+        agent_path="so101_ppo/reach_agent.pth",
         # target_pose = np.array([0.25, 0.1, 0.25, 0.0, 0.0, 1.0, 0.0]),
-        device = "cpu",
-        robot_id = "ryan_robot",
-        use_normalization = True,
-        control_hz = 15.0
+        device="cpu",
+        robot_id="ryan_robot",
+        use_normalization=True,
+        control_hz=15.0
     ):
         """Initialize class with robot interfaces, agent network, and robot kinematics"""
 
@@ -64,7 +65,7 @@ class deploy_reach:
         self.actor = Actor(
             state_dim=24,
             action_dim=5,
-            hidden_dims=[256,128,64],
+            hidden_dims=[256, 128, 64],
             use_normalization=use_normalization,
         ).to(self.device)
 
@@ -99,20 +100,24 @@ class deploy_reach:
         }
         self.success_threshold = 0.04
 
-    def move_to_start(self, duration = 1.0):
+    def move_to_start(self, duration=1.0):
         """Moves the robot arm into the start position."""
         current_obs = self.follower.get_observation()
         gripper_name = self.motor_names[self.action_dim]
-        current_arm = np.array([current_obs[f"{m}.pos"] for m in self.motor_names[:self.action_dim]])
+        current_arm = np.array(
+            [current_obs[f"{m}.pos"] for m in self.motor_names[:self.action_dim]])
         current_gripper = float(current_obs[f"{gripper_name}.pos"])
 
         steps = 2 * 15
         step_size = 1.0/15.0
         for step in range(steps):
             alpha = (step + 1) / steps
-            target_arm = current_arm * (1 - alpha) + self.default_joint_state * alpha
-            target_gripper = current_gripper * (1 - alpha) + self.default_gripper_state * alpha
-            action_dict = {f"{m}.pos": float(target_arm[i]) for i, m in enumerate(self.motor_names[:self.action_dim])}
+            target_arm = current_arm * \
+                (1 - alpha) + self.default_joint_state * alpha
+            target_gripper = current_gripper * \
+                (1 - alpha) + self.default_gripper_state * alpha
+            action_dict = {f"{m}.pos": float(target_arm[i]) for i, m in enumerate(
+                self.motor_names[:self.action_dim])}
             action_dict[f"{gripper_name}.pos"] = float(target_gripper)
             robot_action = RobotAction(action_dict)
             self.follower.send_action(robot_action)
@@ -132,7 +137,8 @@ class deploy_reach:
         # joint state relative to starting position. IsaacLab uses this format
         arm_pos_rel = arm_state - self.default_joint_state  # 5D
 
-        gripper_state = np.array([2.0 * (gripper_state - self.default_gripper_state)])
+        gripper_state = np.array(
+            [2.0 * (gripper_state - self.default_gripper_state)])
 
         joint_state = np.concatenate([arm_pos_rel, gripper_state])  # 6D
 
@@ -144,7 +150,8 @@ class deploy_reach:
 
         if self.prev_joint_state_rad is not None and self.prev_time is not None:
             dt = current_time - self.prev_time
-            joint_vel = (all_rad - self.prev_joint_state_rad) / dt if dt > 0 else np.zeros(self.num_joints, dtype=np.float32)
+            joint_vel = (all_rad - self.prev_joint_state_rad) / \
+                dt if dt > 0 else np.zeros(self.num_joints, dtype=np.float32)
         else:
             joint_vel = np.zeros(self.num_joints, dtype=np.float32)
 
@@ -164,7 +171,7 @@ class deploy_reach:
         ])
 
         return observation
-    
+
     def compute_ee_position(self) -> np.ndarray:
         """Return current EE XYZ (metres) using LeRobot forward kinematics."""
         obs_dict = self.follower.get_observation()
@@ -185,36 +192,37 @@ class deploy_reach:
            Necessary for converting the normalized state output by LeRobot to radians for joint velocities."""
         tree = ET.parse(urdf_path)
         root = tree.getroot()
-        
+
         limits = {}
         for joint in root.findall('joint'):
             joint_name = joint.get('name')
             joint_type = joint.get('type')
-            
+
             if joint_type == 'revolute':
                 limit_elem = joint.find('limit')
                 if limit_elem is not None:
                     lower = float(limit_elem.get('lower'))
                     upper = float(limit_elem.get('upper'))
                     limits[joint_name] = (lower, upper)
-        
+
         return limits
-    
+
     def arm_state_to_radians(self, arm_joint_state):
         """Converts normalized arm joint state ouptut by LeRobot to radians for velocity calculation."""
         radians = np.zeros_like(arm_joint_state)
 
         for i, motor_name in enumerate(self.motor_names[:self.action_dim]):
             lower, upper = self.joint_limits[motor_name]
-            radians[i] = (arm_joint_state[i] + 100.0) / 200.0 * (upper - lower) + lower
+            radians[i] = (arm_joint_state[i] + 100.0) / \
+                200.0 * (upper - lower) + lower
         return radians
-    
+
     def gripper_to_radians(self, gripper_state):
         """Converts normalized gripper joint state ouptut by LeRobot to radians for velocity calculation."""
         g_lo, g_hi = self.joint_limits["gripper"]
 
         return (gripper_state / 100.0) * (g_hi-g_lo) + g_lo
-    
+
     def step(self, observation):
         """Retrieves observation from robot, feeds that into the actor network, determines the next action."""
         obs_tensor = torch.from_numpy(observation).float().unsqueeze(0)
@@ -234,12 +242,12 @@ class deploy_reach:
         for i, motor_name in enumerate(self.motor_names[:self.action_dim]):
             target_clamped = np.clip(target_positions[i], -100.0, 100.0)
             action_dict[f"{motor_name}.pos"] = float(target_clamped)
-        
+
         robot_action = RobotAction(action_dict)
         self.follower.send_action(robot_action)
 
         return action
-    
+
     def run_episode(self, max_steps=100, reset_to_home=True):
         """Handles the episode logic with dynamic target resampling on success,
         matching Isaac-Reach-SO-ARM101-Normalized-v0 behaviour."""
@@ -276,12 +284,13 @@ class deploy_reach:
                 time.sleep(sleep_time)
 
         print(f"Episode done. Targets reached: {targets_reached}")
-    
+
     def move_to_end(self):
         """Moves the robot arm into the start position."""
         current_obs = self.follower.get_observation()
         gripper_name = self.motor_names[self.action_dim]
-        current_arm = np.array([current_obs[f"{m}.pos"] for m in self.motor_names[:self.action_dim]])
+        current_arm = np.array(
+            [current_obs[f"{m}.pos"] for m in self.motor_names[:self.action_dim]])
         current_gripper = float(current_obs[f"{gripper_name}.pos"])
 
         self.end_joint_state = np.array([
@@ -298,23 +307,26 @@ class deploy_reach:
         step_size = 1.0/15.0
         for step in range(steps):
             alpha = (step + 1) / steps
-            target_arm = current_arm * (1 - alpha) + self.end_joint_state * alpha
-            target_gripper = current_gripper * (1 - alpha) + self.end_gripper_state * alpha
-            action_dict = {f"{m}.pos": float(target_arm[i]) for i, m in enumerate(self.motor_names[:self.action_dim])}
+            target_arm = current_arm * \
+                (1 - alpha) + self.end_joint_state * alpha
+            target_gripper = current_gripper * \
+                (1 - alpha) + self.end_gripper_state * alpha
+            action_dict = {f"{m}.pos": float(target_arm[i]) for i, m in enumerate(
+                self.motor_names[:self.action_dim])}
             action_dict[f"{gripper_name}.pos"] = float(target_gripper)
             robot_action = RobotAction(action_dict)
             self.follower.send_action(robot_action)
             time.sleep(step_size)
-
 
     def disconnect(self):
         """Handles"""
         self.move_to_end()
         self.follower.disconnect()
 
+
 def main():
     parser = argparse.ArgumentParser(description="Deploy PPO policy to SO-101")
-    
+
     # Model
     parser.add_argument("--checkpoint", type=str, required=True,
                         help="Path to agent (.pth)")
@@ -325,10 +337,10 @@ def main():
     # parser.add_argument("--target-x", type=float, default=0.25)
     # parser.add_argument("--target-y", type=float, default=0.0)
     # parser.add_argument("--target-z", type=float, default=0.15)
-    # parser.add_argument("--target-quat", type=float, nargs=4, 
+    # parser.add_argument("--target-quat", type=float, nargs=4,
     #                     default=[0.0, 0.0, 1.0, 0.0],
     #                     help="Target quaternion [qw, qx, qy, qz]")
-    
+
     # Control
     parser.add_argument("--hz", type=float, default=15.0,
                         help="Control frequency (Hz)")
@@ -344,15 +356,15 @@ def main():
                         help="Robot USB port")
     parser.add_argument("--robot-id", type=str, default="ryan_robot",
                         help="Robot calibration ID")
-    
+
     args = parser.parse_args()
-    
+
     # Create target pose
     # target_pose = np.array([
     #     args.target_x, args.target_y, args.target_z,
     #     *args.target_quat
     # ], dtype=np.float32)
-    
+
     # Create deployment
     deployment = deploy_reach(
         agent_path=args.checkpoint,
@@ -364,13 +376,14 @@ def main():
         control_hz=args.hz,
         use_normalization=args.use_normalization
     )
-    
+
     deployment.run_episode(
         max_steps=args.max_steps,
         reset_to_home=args.reset_to_home,
     )
-    
+
     deployment.disconnect()
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
     main()

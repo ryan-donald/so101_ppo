@@ -1,3 +1,6 @@
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=fff)](https://docs.python.org/3/whatsnew/3.10.html)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.7-ee4c2c?logo=pytorch&logoColor=white)](https://github.com/pytorch/pytorch/releases/tag/v2.7.0)
+
 This is a repository containing scripts to deploy a trained PPO agent on a real-world SO-ARM101 Robot. 
 Information about the SO-ARM101 robot can be found [here](https://github.com/TheRobotStudio/SO-ARM100).
 

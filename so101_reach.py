@@ -1,4 +1,3 @@
-from network import Actor
 import argparse
 import sys
 import time
@@ -15,6 +14,8 @@ from lerobot.processor.converters import observation_to_transition, transition_t
 from lerobot.robots.so_follower.robot_kinematic_processor import ForwardKinematicsJointsToEE
 
 sys.path.insert(0, "/home/ryan/Documents/IsaacLab/scripts/ryan_ppo")
+
+from network import Actor
 
 
 class deploy_reach:
@@ -38,6 +39,7 @@ class deploy_reach:
         # self.target_pose = target_pose
         self.action_scale = action_scale
         self.device = torch.device(device)
+        self.control_hz = control_hz
         self.control_dt = 1.0/control_hz
 
         follower_config = SO100FollowerConfig(
@@ -98,7 +100,9 @@ class deploy_reach:
             "y": (-0.24, 0.24),
             "z": (0.15, 0.30),
         }
-        self.success_threshold = 0.04
+        self.success_threshold = 0.05
+
+        self.targets = [self.sample_workspace_target() for _ in range(20)]
 
     def move_to_start(self, duration=1.0):
         """Moves the robot arm into the start position."""
@@ -247,11 +251,19 @@ class deploy_reach:
         self.follower.send_action(robot_action)
 
         return action
+    
+    def run_single_episode(self):
+        """Handles running a single episode, seperated into a different function to
+        allow for easier profiling to determine control frequency limits."""
+        obs = self.get_observation()
+        action = self.step(obs)
 
-    def run_episode(self, max_steps=100, reset_to_home=True):
+        return
+        
+    def run_episode(self, seconds=120, reset_to_home=True):
         """Handles the episode logic with dynamic target resampling on success,
         matching Isaac-Reach-SO-ARM101-Normalized-v0 behaviour."""
-
+        max_steps = int(seconds * self.control_hz)
         if reset_to_home:
             self.move_to_start(3.0)
 
@@ -259,31 +271,34 @@ class deploy_reach:
         self.prev_joint_state_rad = None
         self.prev_time = None
 
-        self.target_pose = self.sample_workspace_target()
+        # self.target_pose = self.sample_workspace_target()
+        self.target_pose = self.targets[0]
 
-        targets_reached = 0
+        # targets_reached = 0
 
         for step in range(max_steps):
-            step_start = time.time()
+            step_start = time.perf_counter()
 
-            obs = self.get_observation()
-            action = self.step(obs)
+            self.run_single_episode()
 
             # Check success via LeRobot FK
-            ee_pos = self.compute_ee_position()
-            dist = float(np.linalg.norm(ee_pos - self.target_pose[:3]))
+            # ee_pos = self.compute_ee_position()
+            # dist = float(np.linalg.norm(ee_pos - self.target_pose[:3]))
 
-            if dist < self.success_threshold:
-                targets_reached += 1
-                time.sleep(1)
-                self.target_pose = self.sample_workspace_target()
+            # if dist < self.success_threshold:
+            #     targets_reached += 1
+            #     time.sleep(1)
+            #     self.target_pose = self.sample_workspace_target()
 
-            elapsed = time.time() - step_start
+            self.target_pose = self.targets[(step*20) // max_steps] # max steps = 1000, step from 0 to 1000. If i # step by 10, step 100 = 1000
+
+            elapsed = time.perf_counter() - step_start
             sleep_time = max(0.0, self.control_dt - elapsed)
             if sleep_time:
                 time.sleep(sleep_time)
 
-        print(f"Episode done. Targets reached: {targets_reached}")
+        print(f"Episode Done.")
+        # print(f"Episode done. Targets reached: {targets_reached}")
 
     def move_to_end(self):
         """Moves the robot arm into the start position."""
@@ -319,7 +334,7 @@ class deploy_reach:
             time.sleep(step_size)
 
     def disconnect(self):
-        """Handles"""
+        """Handles robot cleanup"""
         self.move_to_end()
         self.follower.disconnect()
 
@@ -344,7 +359,7 @@ def main():
     # Control
     parser.add_argument("--hz", type=float, default=15.0,
                         help="Control frequency (Hz)")
-    parser.add_argument("--max-steps", type=int, default=100,
+    parser.add_argument("--seconds", type=int, default=120,
                         help="Maximum steps per episode")
     parser.add_argument("--reset-to-home", action="store_true",
                         help="Reset to home position before episode")
@@ -378,7 +393,7 @@ def main():
     )
 
     deployment.run_episode(
-        max_steps=args.max_steps,
+        seconds=args.seconds,
         reset_to_home=args.reset_to_home,
     )
 

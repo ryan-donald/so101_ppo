@@ -1,0 +1,3 @@
+lerobot=0.4.4
+torch=2.7.1
+ryan-ppo=0.1.0

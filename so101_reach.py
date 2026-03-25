@@ -13,9 +13,7 @@ from lerobot.processor import RobotProcessorPipeline
 from lerobot.processor.converters import observation_to_transition, transition_to_observation
 from lerobot.robots.so_follower.robot_kinematic_processor import ForwardKinematicsJointsToEE
 
-sys.path.insert(0, "/home/ryan/Documents/IsaacLab/scripts/ryan_ppo")
-
-from network import Actor
+from ryan_ppo.network import Actor
 
 
 class deploy_reach:
@@ -25,7 +23,7 @@ class deploy_reach:
         urdf_path,
         port,
         action_scale,
-        agent_path="so101_ppo/reach_agent.pth",
+        agent_path="reach_agent.pth",
         # target_pose = np.array([0.25, 0.1, 0.25, 0.0, 0.0, 1.0, 0.0]),
         device="cpu",
         robot_id="ryan_robot",
@@ -35,6 +33,8 @@ class deploy_reach:
         """Initialize class with robot interfaces, agent network, and robot kinematics"""
 
         self.urdf_path = urdf_path
+        print(self.urdf_path)
+
         self.port = port
         # self.target_pose = target_pose
         self.action_scale = action_scale
@@ -62,7 +62,7 @@ class deploy_reach:
 
         self.default_gripper_state = 9.09
 
-        self.joint_limits = self.parse_joint_limits_from_urdf(urdf_path)
+        self.joint_limits = self.parse_joint_limits_from_urdf(self.urdf_path)
 
         self.actor = Actor(
             state_dim=24,
@@ -80,7 +80,7 @@ class deploy_reach:
         self.action_dim = 5
 
         kinematics = RobotKinematics(
-            urdf_path=str(urdf_path),
+            urdf_path=self.urdf_path,
             target_frame_name="gripper_frame_link",
             joint_names=self.motor_names,
         )
@@ -251,7 +251,7 @@ class deploy_reach:
         self.follower.send_action(robot_action)
 
         return action
-    
+
     def run_single_episode(self):
         """Handles running a single episode, seperated into a different function to
         allow for easier profiling to determine control frequency limits."""
@@ -259,7 +259,7 @@ class deploy_reach:
         action = self.step(obs)
 
         return
-        
+
     def run_episode(self, seconds=120, reset_to_home=True):
         """Handles the episode logic with dynamic target resampling on success,
         matching Isaac-Reach-SO-ARM101-Normalized-v0 behaviour."""
@@ -290,7 +290,8 @@ class deploy_reach:
             #     time.sleep(1)
             #     self.target_pose = self.sample_workspace_target()
 
-            self.target_pose = self.targets[(step*20) // max_steps] # max steps = 1000, step from 0 to 1000. If i # step by 10, step 100 = 1000
+            # max steps = 1000, step from 0 to 1000. If i # step by 10, step 100 = 1000
+            self.target_pose = self.targets[(step*20) // max_steps]
 
             elapsed = time.perf_counter() - step_start
             sleep_time = max(0.0, self.control_dt - elapsed)
@@ -372,7 +373,14 @@ def main():
     parser.add_argument("--robot-id", type=str, default="ryan_robot",
                         help="Robot calibration ID")
 
+    # URDF
+    parser.add_argument("--urdf-path", type=str, default="so101_new_calib.urdf",
+                        help="Directory path to URDF file")
+
     args = parser.parse_args()
+
+    # path parsing for URDF, necessary for providing full path to lerobot for stl files.
+    script_dir = Path(__file__).resolve().parent
 
     # Create target pose
     # target_pose = np.array([
@@ -383,7 +391,7 @@ def main():
     # Create deployment
     deployment = deploy_reach(
         agent_path=args.checkpoint,
-        urdf_path="/home/ryan/Documents/so101_ppo/so101_new_calib.urdf",
+        urdf_path=str(script_dir / args.urdf_path),
         port=args.port,
         robot_id=args.robot_id,
         # target_pose=target_pose,
